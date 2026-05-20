@@ -376,21 +376,53 @@ export default function prPlanWorkflowExtension(pi: ExtensionAPI) {
     await restoreStateFromSession(pi, ctx);
   });
 
-  // Block git branch switching during active workflow
+  // Block destructive git operations during active workflow
   pi.on("tool_call", async (event) => {
-    if (state.mode !== "idle" && event.toolName === "bash") {
-      const command: string = event.input.command ?? "";
+    if (state.mode === "idle" || event.toolName !== "bash") return;
+
+    const command: string = event.input.command ?? "";
+
+    // During interviewing: allow creating a new branch (git checkout -b / git switch -c)
+    // but block switching away or deleting branches
+    if (state.mode === "interviewing") {
       const blocked = [
-        /git\s+checkout/,
-        /git\s+switch/,
+        /git\s+(checkout|switch)\s+(?!-b\s+-c\s+)/, // switch away but not create
         /git\s+branch\s+-[dD]/,
       ];
       if (blocked.some((re) => re.test(command))) {
         return {
           block: true,
-          reason: `PR-plan workflow active on branch \`${state.branch}\`. Cannot switch or delete branches. Use /pr-done, /pr-cancel, or /pr-resume.`,
+          reason: `PR-plan interview in progress. You may create a new branch with 'git checkout -b pi/...', but cannot switch branches or delete them.`,
         };
       }
+      return;
+    }
+
+    // During execution: block any branch switching or deletion
+    const blocked = [
+      /git\s+checkout/,
+      /git\s+switch/,
+      /git\s+branch\s+-[dD]/,
+    ];
+    if (blocked.some((re) => re.test(command))) {
+      return {
+        block: true,
+        reason: `PR-plan workflow active on branch \`${state.branch}\`. Cannot switch or delete branches. Use /pr-done, /pr-cancel, or /pr-resume.`,
+      };
+    }
+  });
+
+  // Detect when the LLM creates or switches to a pi/ branch during interviewing
+  pi.on("tool_result", async (event, ctx) => {
+    if (state.mode !== "interviewing" || event.toolName !== "bash") return;
+
+    const command: string = event.input.command ?? "";
+    const createdBranch = command.match(/git\s+(checkout|switch)\s+-[bc]\s+(\S+)/)?.[2];
+    if (createdBranch?.startsWith("pi/")) {
+      state.branch = createdBranch;
+      persistState(pi);
+      updateStatus(ctx);
+      ctx.ui.notify(`Model created branch \`${createdBranch}\`.`, "info");
     }
   });
 
@@ -409,7 +441,7 @@ export default function prPlanWorkflowExtension(pi: ExtensionAPI) {
       return {
         message: {
           customType: "pr-plan-context",
-          content: `[PR-PLAN INTERVIEWING] After we reach a shared understanding, you will be asked to confirm the plan. Do NOT create the branch yourself.`,
+          content: `[PR-PLAN INTERVIEWING] Reach a shared understanding with the user. Once the plan is concrete, create a branch with 'git checkout -b pi/<slug>', write the plan to .pi/plan.md, and commit it. The user can also use /pr-lock to trigger a final plan presentation.`,
           display: false,
         },
       };
@@ -457,30 +489,41 @@ export default function prPlanWorkflowExtension(pi: ExtensionAPI) {
     // Generate branch name
     const branchName = generateBranchSlug(planSection);
 
-    // Check for duplicate
-    if (await branchExists(pi, branchName)) {
-      ctx.ui.notify(
-        `Branch \`${branchName}\` already exists. PR-plan workflow cannot start. Use /pr-resume or /pr-cancel, then try again.`,
-        "error",
-      );
-      state = { mode: "idle", branch: null, baseBranch: null, planText: null, originalWorkingBranch: null };
-      persistState(pi);
-      updateStatus(ctx);
-      return;
+    // Check if the LLM already created a branch and switched to it
+    const currentBranch = await getCurrentBranch(pi);
+    const onPiBranch = currentBranch?.startsWith("pi/");
+
+    if (!onPiBranch) {
+      // Extension creates the branch as fallback
+      if (await branchExists(pi, branchName)) {
+        ctx.ui.notify(
+          `Branch \`${branchName}\` already exists. PR-plan workflow cannot start. Use /pr-resume or /pr-cancel, then try again.`,
+          "error",
+        );
+        state = { mode: "idle", branch: null, baseBranch: null, planText: null, originalWorkingBranch: null };
+        persistState(pi);
+        updateStatus(ctx);
+        return;
+      }
+
+      const checkout = await execCapture(pi, "git", ["checkout", "-b", branchName]);
+      if (!checkout.ok) {
+        ctx.ui.notify(`Failed to create branch: ${checkout.stderr}`, "error");
+        return;
+      }
+      state.branch = branchName;
+    } else {
+      state.branch = currentBranch;
     }
 
-    // Create branch, write plan, commit
-    const checkout = await execCapture(pi, "git", ["checkout", "-b", branchName]);
-    if (!checkout.ok) {
-      ctx.ui.notify(`Failed to create branch: ${checkout.stderr}`, "error");
-      return;
+    // Write plan if not already present
+    const planExists = await execCapture(pi, "test", ["-f", ".pi/plan.md"]).then((r) => r.ok);
+    if (!planExists) {
+      await pi.exec("bash", ["-c", `mkdir -p .pi && cat > .pi/plan.md << 'EOF'\n${planSection}\nEOF`]);
+      await execCapture(pi, "git", ["add", ".pi/plan.md"]);
+      await execCapture(pi, "git", ["commit", "-m", "chore: lock PR plan"]);
     }
 
-    await pi.exec("bash", ["-c", `mkdir -p .pi && cat > .pi/plan.md << 'EOF'\n${planSection}\nEOF`]);
-    await execCapture(pi, "git", ["add", ".pi/plan.md"]);
-    await execCapture(pi, "git", ["commit", "-m", "chore: lock PR plan"]);
-
-    state.branch = branchName;
     state.planText = planSection;
     state.mode = "executing";
     persistState(pi);
