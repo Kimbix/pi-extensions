@@ -58,14 +58,17 @@ async function branchExists(pi: ExtensionAPI, branch: string): Promise<boolean> 
 }
 
 function generateBranchSlug(plan: string): string {
-  // Use the first non-empty line as a summary
-  const firstLine = plan.split("\n").find((l) => l.trim().length > 0) ?? "plan";
-  const slug = firstLine
+  // Skip "Plan:" header and empty lines, prefer a numbered step
+  const lines = plan.split("\n").map((l) => l.trim()).filter((l) => l.length > 0 && !l.match(/^plan:?\s*$/i));
+  const numberedLine = lines.find((l) => l.match(/^\d+[\.)]\s+/));
+  const summaryLine = numberedLine ?? lines[0] ?? "plan";
+  const clean = summaryLine
+    .replace(/^\d+[\.)]\s*/, "") // strip numbering
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 50);
-  return `pi/${slug || "plan"}`;
+  return `pi/${clean || "plan"}`;
 }
 
 function persistState(pi: ExtensionAPI) {
@@ -175,10 +178,10 @@ export default function prPlanWorkflowExtension(pi: ExtensionAPI) {
         }
       }
 
-      // 5. Ask the user for their initial plan idea
-      const idea = await ctx.ui.input(
+      // 5. Ask the user for their initial plan idea (multiline)
+      const idea = await ctx.ui.editor(
         "What do you want to build?",
-        "Describe your plan or idea in a few sentences...",
+        "Describe your plan or idea in a few sentences...\n\nYou can write multiple lines. Press Ctrl+G when done.",
       );
       if (!idea?.trim()) {
         ctx.ui.notify("No plan provided. Cancelled.", "warning");
