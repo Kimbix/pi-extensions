@@ -294,6 +294,23 @@ export default function prPlanWorkflowExtension(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("pr-lock", {
+    description: "Lock the plan: signal that the grill-me interview is complete and the plan is set in stone",
+    handler: async (_args, ctx) => {
+      if (state.mode !== "interviewing") {
+        ctx.ui.notify("No active interview to lock. Use /pr-plan first.", "error");
+        return;
+      }
+
+      // Prompt the model to present the final concrete plan
+      pi.sendUserMessage(
+        "We have reached a shared understanding. Please present the final, concrete plan as a numbered list under a clear 'Plan:' header. This will be locked and used to create a branch.",
+        { deliverAs: "followUp" },
+      );
+      ctx.ui.notify("Asking model to present the final plan...", "info");
+    },
+  });
+
   pi.registerCommand("pr-resume", {
     description: "Resume a previous PR-plan workflow from an existing pi/ branch",
     handler: async (_args, ctx) => {
@@ -413,14 +430,13 @@ export default function prPlanWorkflowExtension(pi: ExtensionAPI) {
       .map((c) => c.text)
       .join("\n");
 
-    // Look for "Plan:" section
+    // Look for an explicit "Plan:" section — only proceed if one is found
     const planMatch = text.match(/Plan:[\s\S]*?(?=\n\n[A-Z]|$)/i);
-    const planSection = planMatch ? planMatch[0] : text.slice(0, 2000);
-
-    if (!planSection.trim()) {
-      // No plan yet — this is expected during back-and-forth interview turns
+    if (!planMatch) {
+      // No explicit Plan: header yet — this is expected during back-and-forth interview turns
       return;
     }
+    const planSection = planMatch[0];
 
     // Show plan and ask for confirmation
     const planPreview = planSection.slice(0, 800) + (planSection.length > 800 ? "..." : "");
