@@ -1,0 +1,11 @@
+{
+  "name": "@kimbix/pi-extensions",
+  "version": "1.0.0",
+  "description": "Pi coding agent extensions and skills: PR-plan workflow + grill-me skill",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": [".pi/extensions"],
+    "skills": [".pi/skills"]
+  }
+}
