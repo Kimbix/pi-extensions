@@ -175,14 +175,24 @@ export default function prPlanWorkflowExtension(pi: ExtensionAPI) {
         }
       }
 
-      // 5. Enter interview mode and trigger grill-me
+      // 5. Ask the user for their initial plan idea
+      const idea = await ctx.ui.input(
+        "What do you want to build?",
+        "Describe your plan or idea in a few sentences...",
+      );
+      if (!idea?.trim()) {
+        ctx.ui.notify("No plan provided. Cancelled.", "warning");
+        return;
+      }
+
+      // 6. Enter interview mode and trigger grill-me with the user's idea
       state.mode = "interviewing";
       persistState(pi);
       updateStatus(ctx);
       ctx.ui.notify("PR-plan workflow started. Interviewing with grill-me skill...", "info");
 
-      // Trigger the grill-me skill automatically
-      pi.sendUserMessage("/skill:grill-me", { deliverAs: "followUp" });
+      // Send the user's idea, then trigger the grill-me skill
+      pi.sendUserMessage(`${idea.trim()}\n\n/skill:grill-me`, { deliverAs: "followUp" });
     },
   });
 
@@ -408,7 +418,7 @@ export default function prPlanWorkflowExtension(pi: ExtensionAPI) {
     const planSection = planMatch ? planMatch[0] : text.slice(0, 2000);
 
     if (!planSection.trim()) {
-      ctx.ui.notify("No plan detected in the interview. Continuing...", "warning");
+      // No plan yet — this is expected during back-and-forth interview turns
       return;
     }
 
